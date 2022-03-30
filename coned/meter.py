@@ -3,6 +3,7 @@ import requests
 import logging
 import asyncio
 from pyppeteer import launch
+import pyppeteer
 import os
 import glob
 import json
@@ -88,24 +89,27 @@ class Meter(object):
         self.browser_path = browser_path
         self._LOGGER.debug("browser_path = %s", self.browser_path)
 
+        print("yesy")
+        print("test2")
+
     async def last_read(self):
         """Return the last meter read value and unit of measurement"""
         try:
-            asyncio.set_event_loop(self.loop)
-            asyncio.get_event_loop().create_task(self.browse())
+            # asyncio.set_event_loop(self.loop)
+            # asyncio.get_event_loop().create_task(self.browse())
+
             await self.browse()
 
-            # parse the return reads and extract the most recent one
-            # (i.e. last not None)
-            jsonResponse = json.loads(self.raw_data)
-            lastRead = None
+            # Reassign to fit legacy code
+            jsonResponse = self.data
+            
             if 'error' in jsonResponse:
-                raise MeterError(jsonResponse['error']['details'])
+                raise MeterError(jsonResponse['error']['details'])   # ERROR HERE
             for read in jsonResponse['reads']:
                 if read['value'] is not None:
                     lastRead = read
-            self._LOGGER.debug("lastRead = %s", lastRead)
 
+            self._LOGGER.debug("lastRead = %s", lastRead)
             self.startTime = lastRead['startTime']
             self.endTime = lastRead['endTime']
             self.last_read_val = lastRead['value']
@@ -113,6 +117,10 @@ class Meter(object):
 
             self._LOGGER.info("last read = %s %s %s %s", self.startTime, self.endTime, self.last_read_val, self.unit_of_measurement)
 
+            testArray = [self.startTime, self.endTime, self.last_read_val, self.unit_of_measurement]
+            for x in testArray:
+                print(str(x))
+        
             return self.startTime, self.endTime, self.last_read_val, self.unit_of_measurement
         except:
             raise MeterError("Error requesting meter data")
@@ -127,75 +135,62 @@ class Meter(object):
 
 
         browser_launch_config = {
-            "defaultViewport": {"width": 1920, "height": 1080},
-            "dumpio": True,
-            "args": ["--no-sandbox", "--disable-gpu", "--disable-software-rasterizer"]}
-        if self.browser_path is not None:
-            browser_launch_config['executablePath'] = self.browser_path
-        self._LOGGER.debug("browser_launch_config = %s", browser_launch_config)
+            'defaultViewport': {'width': 1920, 'height': 1080},
+            'dumpio': False,
+            'headless': True,
+            'args': ['--no-sandbox']
+            }
 
-        browser = await launch(browser_launch_config)
+        # Create browser and login
+        browser = await pyppeteer.launch(browser_launch_config)
         page = await browser.newPage()
-
-        await page.goto('https://www.' + self.site + '.com/en/login', {'waitUntil' : 'domcontentloaded'})
-        # sleep = 8000
-        # self._LOGGER.debug("Waiting for = %s millis", sleep)
-        # await page.waitFor(sleep)
+        await page.goto('https://coned.com/en/login', {'waitUntil' : 'domcontentloaded'})
         element = await page.querySelector('#form-login-email')
-        await page.screenshot({'path': 'meter1-1.png'})
+        logging.info('Authenticating...')
 
-        await page.type("#form-login-email", self.email)
-        await page.type("#form-login-password", self.password)
-        # await page.click("#form-login-remember-me")
-        await page.screenshot({'path': 'meter1-2.png'})
-        await page.click(".submit-button")
-        # # Wait for login to authenticate
-        # sleep = 30000
-        # self._LOGGER.debug("Waiting for = %s millis", sleep)
-        # await page.waitFor(sleep)
-        await fetch_element(page, '.js-login-new-device-form-selector:not(.hidden)')
-        # if mfa_form is None:
-        #     logging.error('Never got MFA prompt. Aborting!')
-        #     return
-        await fetch_element(page, '#form-login-mfa-code')
-        await page.screenshot({'path': 'meter2-1.png'})
+        await page.type('#form-login-email', self.email)
+        await page.type('#form-login-password', self.password)
+        await page.click('.submit-button')
 
-        # Enter in 2 factor auth code (see README for details)
-        mfa_code = self.mfa_secret
-        if self.mfa_type == self.MFA_TYPE_TOTP:
-            mfa_code = pyotp.TOTP(self.mfa_secret).now()
-        #_LOGGER.debug("mfa_code = %s", mfa_code)
-        await page.type("#form-login-mfa-code", mfa_code)
-        await page.screenshot({'path': 'meter2-2.png'})
-        await page.click(".js-login-new-device-form .button")
-        # Wait for authentication to complete
-        await page.waitForNavigation()
-        # sleep = 5000
-        # self._LOGGER.debug("Waiting for = %s millis", sleep)
-        # await page.waitFor(sleep)
-        # await fetch_element(page, '#mainContent > div > div.dashboard-header-wrapper.coned-tabs--visible.js-module > div.dashboard-header.dashboard-header--oru.content-gutter > div.coned-tabs.js-coned-tabs-dropdown.js-coned-tabs.coned-tabs--oru > div:nth-child(2) > button > span')
-        await page.screenshot({'path': 'meter3-1.png'})
 
-        if self.account_number:
-            account_page_url = 'https://www.' + self.site + '.com/en/accounts-billing/dashboard?account=' + self.account_number
-            print(account_page_url)
-            await page.goto(account_page_url)
-            # await page.screenshot({'path': 'meter4.png'})
-            sleep = 30000
-            _LOGGER.debug("Waiting for = %s millis", sleep)
-            await page.waitFor(sleep)
+        # Get MFA form object
+        mfa_form = await fetch_element(page, '.js-login-new-device-form-selector:not(.hidden)')
+        if mfa_form is None:
+            logging.error('Never got MFA prompt. Aborting!')
+            return
 
-        # Access the API using your newly acquired authentication cookies!
+        # Enter MFA form text box
+        logging.info('Entering MFA code...')
+        mfa = await fetch_element(page, '#form-login-mfa-code')
+        await mfa.type(self.mfa_secret)
+        await asyncio.gather(
+            page.waitForNavigation(),
+            page.click('.js-login-new-device-form .button'),
+        )
+
+        # Await page load
+        logging.info('Pausing for auth...')
+        await page.waitFor(5000)
+        logging.info('Fetching readings JSON...')
+
+        # Open new tab with account info, build endpoint url and fetch
         api_page = await browser.newPage()
-        api_url = 'https://' + self.data_site + '.opower.com/ei/edge/apis/cws-real-time-ami-v1/cws/' + self.data_site + '/accounts/' + self.account_uuid + '/meters/' + self.meter_number + '/usage'
-        await api_page.goto(api_url)
-        await api_page.screenshot({'path': 'meter3-2.png'})
-
+        account_id = self.account_uuid
+        meter_no = self.meter_number
+        url = f"https://cned.opower.com/ei/edge/apis/cws-real-time-ami-v1/cws/cned/accounts/{account_id}/meters/{meter_no}/usage"
+        await api_page.goto(url)
         data_elem = await api_page.querySelector('pre')
-        self.raw_data = await api_page.evaluate('(el) => el.textContent', data_elem)
-        self._LOGGER.info(self.raw_data)
+        raw_data = await api_page.evaluate('(el) => el.textContent', data_elem)
+
+        data = json.loads(raw_data)
+
+        # Assign data to parent object (to fit starter code)
+        self.data = data
 
         await browser.close()
+        logging.info('Done!')
+
+        return data
 
 async def fetch_element(page, selector, max_tries=10):
     tries = 0
